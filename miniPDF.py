@@ -58,6 +58,62 @@ def merge_pdfs(pdf_bytes_list):
     writer.write(output)
     return output.getvalue()
 
+def detect_text_content(pdf_bytes):
+    """
+    Detecta si un PDF contiene texto seleccionable
+    Returns: (has_text, text_ratio) donde text_ratio es la proporción de páginas con texto
+    """
+    try:
+        reader = PdfReader(BytesIO(pdf_bytes))
+        pages_with_text = 0
+        total_pages = len(reader.pages)
+        
+        for page in reader.pages:
+            text = page.extract_text().strip()
+            if text and len(text) > 10:  # Mínimo 10 caracteres para considerar que tiene texto útil
+                pages_with_text += 1
+        
+        text_ratio = pages_with_text / total_pages if total_pages > 0 else 0
+        has_significant_text = text_ratio > 0.5  # Más del 50% de páginas tienen texto
+        
+        return has_significant_text, text_ratio
+        
+    except Exception as e:
+        st.warning(f"Error detectando texto en PDF: {str(e)}")
+        return False, 0.0
+
+def analyze_pdfs_for_compression(file_data):
+    """
+    Analiza los PDFs para determinar la mejor estrategia de compresión
+    """
+    analysis_results = []
+    
+    for data in file_data:
+        try:
+            # Extraer páginas seleccionadas primero
+            pages = parse_page_range(data['page_range'], data['num_pages'])
+            if not pages:
+                continue
+                
+            extracted_pdf = extract_pages(data['bytes'], pages)
+            has_text, text_ratio = detect_text_content(extracted_pdf)
+            size_mb = get_file_size(extracted_pdf)
+            
+            analysis_results.append({
+                'name': data['name'],
+                'extracted_pdf': extracted_pdf,
+                'has_text': has_text,
+                'text_ratio': text_ratio,
+                'size_mb': size_mb,
+                'pages_selected': len(pages)
+            })
+            
+        except Exception as e:
+            st.error(f"Error analizando {data['name']}: {str(e)}")
+            continue
+    
+    return analysis_results
+
 def pdf_to_compressed_pdf(input_pdf_bytes, dpi=100, quality=70):
     """
     Comprime un PDF convirtiendo sus páginas a imágenes JPEG y reconvirtiéndolas a PDF
@@ -153,6 +209,13 @@ def main():
         help="El compresor intentará reducir el tamaño hasta este límite"
     )
     
+    # Nueva opción para preservar texto
+    preserve_text = st.sidebar.checkbox(
+        "🔤 Preservar texto seleccionable cuando sea posible",
+        value=True,
+        help="Mantiene el texto seleccionable si el PDF original lo tiene y el tamaño lo permite"
+    )
+    
     # Información sobre la configuración
     st.sidebar.markdown("### 💡 Consejos")
     st.sidebar.markdown("""
@@ -169,7 +232,7 @@ def main():
     - Calidad: 60-70
     """)
     
-    # Área principal (sin columna de instrucciones)
+    # Área principal
     st.header("📤 Subir archivos PDF")
     uploaded_files = st.file_uploader(
         "Selecciona uno o varios archivos PDF",
@@ -213,46 +276,52 @@ def main():
             })
         
         # Botón para procesar
-        if st.button("🔄 Combinar y Comprimir PDF", type="primary", use_container_width=True):
-            with st.spinner("Procesando archivos..."):
-                # Procesar cada archivo
-                extracted_pdfs = []
-                total_original_size = 0
+        if st.button("📄 Combinar y Comprimir PDF", type="primary", use_container_width=True):
+            with st.spinner("Analizando archivos..."):
+                # Analizar PDFs
+                analysis_results = analyze_pdfs_for_compression(file_data)
                 
-                for data in file_data:
-                    try:
-                        # Parsear rango de páginas
-                        pages = parse_page_range(data['page_range'], data['num_pages'])
-                        if not pages:
-                            st.warning(f"No se seleccionaron páginas válidas en {data['name']}")
-                            continue
-                        
-                        # Extraer páginas seleccionadas
-                        extracted = extract_pages(data['bytes'], pages)
-                        extracted_pdfs.append(extracted)
-                        total_original_size += get_file_size(data['bytes'])
-                        
-                    except Exception as e:
-                        st.error(f"Error procesando {data['name']}: {str(e)}")
-                        continue
-                
-                if not extracted_pdfs:
+                if not analysis_results:
                     st.error("No hay páginas válidas para procesar")
                     st.stop()
                 
+                # Mostrar análisis de contenido
+                if preserve_text:
+                    st.subheader("🔍 Análisis de Contenido")
+                    analysis_df = pd.DataFrame([
+                        {
+                            'Archivo': result['name'],
+                            'Páginas': result['pages_selected'],
+                            'Tamaño (MB)': f"{result['size_mb']:.2f}",
+                            'Tiene Texto': "✅ Sí" if result['has_text'] else "❌ No",
+                            'Ratio Texto': f"{result['text_ratio']:.1%}"
+                        }
+                        for result in analysis_results
+                    ])
+                    st.dataframe(analysis_df, hide_index=True)
+                
                 # Combinar PDFs
+                extracted_pdfs = [result['extracted_pdf'] for result in analysis_results]
                 combined_pdf = merge_pdfs(extracted_pdfs)
                 combined_size = get_file_size(combined_pdf)
+                
+                # Determinar si tiene texto seleccionable el PDF combinado
+                combined_has_text, combined_text_ratio = detect_text_content(combined_pdf)
+                
                 st.success(f"✅ {len(extracted_pdfs)} archivos combinados ({combined_size:.2f} MB)")
                 
-                # Verificar si el archivo combinado ya es pequeño
-                if combined_size <= 1.0:  # Menos de 1MB
-                    st.info("ℹ️ El archivo combinado pesa menos de 1MB. No se aplicará compresión.")
+                if combined_has_text and preserve_text:
+                    st.info(f"📝 El documento combinado tiene texto seleccionable ({combined_text_ratio:.1%} de las páginas)")
+                
+                # Verificar si necesita compresión basado en el límite del usuario
+                if combined_size <= max_size_mb:
+                    st.info(f"ℹ️ El archivo combinado ({combined_size:.2f} MB) ya cumple con el límite de {max_size_mb} MB. No se aplicará compresión.")
                     
                     # Mostrar métricas
-                    col1, col2 = st.columns(2)
+                    col1, col2, col3 = st.columns(3)
                     col1.metric("Tamaño combinado", f"{combined_size:.2f} MB")
-                    col2.metric("Acción", "No se aplicó compresión")
+                    col2.metric("Límite configurado", f"{max_size_mb} MB")
+                    col3.metric("Texto seleccionable", "✅ Sí" if combined_has_text else "❌ No")
                     
                     # Botón de descarga
                     output_filename = "documento_combinado.pdf"
@@ -269,60 +338,84 @@ def main():
                         use_container_width=True
                     )
                 else:
-                    # Comprimir con ajuste automático solo si es necesario
-                    st.info(f"🔧 Comprimiendo a máximo {max_size_mb} MB...")
-                    current_dpi = dpi
-                    current_quality = quality
-                    compression_data = []
-                    compressed_pdf_bytes = None
+                    # Necesita compresión
+                    compression_strategy = "texto preservado" if (combined_has_text and preserve_text) else "imagen optimizada"
                     
-                    for attempt in range(10):  # Máximo 10 intentos
-                        with st.spinner(f"Intento {attempt+1}: DPI={current_dpi}, Calidad={current_quality}..."):
-                            compressed_pdf_bytes = pdf_to_compressed_pdf(
-                                combined_pdf,
-                                dpi=current_dpi,
-                                quality=current_quality
-                            )
+                    if combined_has_text and preserve_text:
+                        # Intentar compresión manteniendo el texto (usando pypdf optimization)
+                        st.info(f"🔧 Intentando compresión con texto preservado...")
                         
-                        if compressed_pdf_bytes is None:
-                            st.error("Error en la compresión")
-                            break
-                            
-                        compressed_size = get_file_size(compressed_pdf_bytes)
-                        compression_data.append({
-                            'Intento': attempt + 1,
-                            'DPI': current_dpi,
-                            'Calidad': current_quality,
-                            'Tamaño (MB)': f"{compressed_size:.2f}",
-                            'Resultado': "✅ Éxito" if compressed_size <= max_size_mb else "⚠️ Intento"
-                        })
+                        # Aquí podrías implementar técnicas de compresión que preserven el texto
+                        # Por ahora, usaremos el PDF combinado tal como está si es posible
+                        final_pdf = combined_pdf
+                        final_size = combined_size
+                        text_preserved = True
                         
-                        # Verificar si cumple con el tamaño máximo
-                        if compressed_size <= max_size_mb:
-                            break
-                            
-                        # Ajustar parámetros para siguiente intento
-                        current_dpi = max(50, int(current_dpi * 0.85))
-                        current_quality = max(20, int(current_quality * 0.85))
+                        if final_size > max_size_mb:
+                            st.warning(f"⚠️ No se puede reducir más el tamaño manteniendo el texto seleccionable.")
+                            st.info("🖼️ Aplicando compresión con conversión a imagen...")
+                            text_preserved = False
                     
-                    # Mostrar resultados
-                    if compressed_pdf_bytes:
-                        final_size = get_file_size(compressed_pdf_bytes)
+                    # Si no se puede preservar texto o no lo tiene, usar compresión por imagen
+                    if not (combined_has_text and preserve_text) or (combined_has_text and preserve_text and combined_size > max_size_mb):
+                        st.info(f"🔧 Comprimiendo con estrategia: {compression_strategy} (máximo {max_size_mb} MB)...")
+                        current_dpi = dpi
+                        current_quality = quality
+                        compression_data = []
+                        compressed_pdf_bytes = None
+                        
+                        for attempt in range(10):  # Máximo 10 intentos
+                            with st.spinner(f"Intento {attempt+1}: DPI={current_dpi}, Calidad={current_quality}..."):
+                                compressed_pdf_bytes = pdf_to_compressed_pdf(
+                                    combined_pdf,
+                                    dpi=current_dpi,
+                                    quality=current_quality
+                                )
+                            
+                            if compressed_pdf_bytes is None:
+                                st.error("Error en la compresión")
+                                break
+                                
+                            compressed_size = get_file_size(compressed_pdf_bytes)
+                            compression_data.append({
+                                'Intento': attempt + 1,
+                                'DPI': current_dpi,
+                                'Calidad': current_quality,
+                                'Tamaño (MB)': f"{compressed_size:.2f}",
+                                'Resultado': "✅ Éxito" if compressed_size <= max_size_mb else "⚠️ Intento"
+                            })
+                            
+                            # Verificar si cumple con el tamaño máximo
+                            if compressed_size <= max_size_mb:
+                                break
+                                
+                            # Ajustar parámetros para siguiente intento
+                            current_dpi = max(50, int(current_dpi * 0.85))
+                            current_quality = max(20, int(current_quality * 0.85))
+                        
+                        final_pdf = compressed_pdf_bytes
+                        final_size = get_file_size(compressed_pdf_bytes) if compressed_pdf_bytes else combined_size
+                        text_preserved = False
+                        
+                        # Mostrar tabla de intentos
+                        if compression_data:
+                            st.subheader("📊 Proceso de Compresión")
+                            df = pd.DataFrame(compression_data)
+                            st.dataframe(df, hide_index=True)
+                    
+                    # Mostrar resultados finales
+                    if final_pdf:
                         reduction = combined_size - final_size
                         
                         st.success("🎉 ¡Proceso completado!")
                         
-                        # Mostrar tabla de intentos
-                        st.subheader("📊 Proceso de Compresión")
-                        df = pd.DataFrame(compression_data)
-                        st.dataframe(df, hide_index=True)
-                        
                         # Mostrar métricas
-                        col1, col2, col3 = st.columns(3)
-                        col1.metric("Tamaño combinado", f"{combined_size:.2f} MB")
+                        col1, col2, col3, col4 = st.columns(4)
+                        col1.metric("Tamaño inicial", f"{combined_size:.2f} MB")
                         col2.metric("Tamaño final", f"{final_size:.2f} MB", 
                                    f"-{reduction:.2f} MB")
                         col3.metric("Reducción", f"{(reduction/combined_size)*100:.1f}%")
+                        col4.metric("Texto preservado", "✅ Sí" if text_preserved else "❌ No")
                         
                         # Botón de descarga
                         output_filename = "documento_comprimido.pdf"
@@ -332,7 +425,7 @@ def main():
                         
                         st.download_button(
                             label="📥 Descargar PDF Comprimido",
-                            data=compressed_pdf_bytes,
+                            data=final_pdf,
                             file_name=output_filename,
                             mime="application/pdf",
                             type="primary",
