@@ -13,7 +13,8 @@ import re
 # from utilities_minipdf import *
 from utilities_minipdf import (
     parse_page_range,
-    extract_pages,
+    # extract_pages,
+    extract_pages_2,
     merge_pdfs,
     detect_text_content,
     analyze_pdfs_for_compression,
@@ -23,6 +24,105 @@ from utilities_minipdf import (
     find_common_project_key,
     calculate_combined_size
 )
+
+def compress_pdf_selective(pdf_bytes, dpi=150, quality=80, preserve_text=True):
+    """
+    Comprime un PDF de forma selectiva: solo convierte a imagen las páginas sin texto seleccionable.
+    """
+    if not preserve_text:
+        # Si no se desea preservar texto, comprimir todo como antes
+        return pdf_to_compressed_pdf(pdf_bytes, dpi=dpi, quality=quality)
+    
+    reader = PdfReader(BytesIO(pdf_bytes))
+    total_pages = len(reader.pages)
+    
+    # Detectar qué páginas tienen texto seleccionable
+    pages_with_text = []
+    pages_without_text = []
+    
+    with st.spinner("Analizando páginas con texto seleccionable..."):
+        for i, page in enumerate(reader.pages):
+            try:
+                text = page.extract_text()
+                # Si la página tiene más de 10 caracteres de texto, consideramos que tiene texto seleccionable
+                if len(text.strip()) > 10:
+                    pages_with_text.append(i)
+                else:
+                    pages_without_text.append(i)
+            except:
+                # Si hay error al extraer texto, asumimos que no tiene texto seleccionable
+                pages_without_text.append(i)
+    
+    st.info(f"📊 Análisis: {len(pages_with_text)} páginas con texto, {len(pages_without_text)} páginas sin texto")
+    
+    if not pages_without_text:
+        # Si todas las páginas tienen texto, devolver el original
+        st.info("Todas las páginas tienen texto seleccionable. No se aplicará compresión por imagen.")
+        return pdf_bytes
+    
+    # Procesar páginas sin texto (convertir a imagen)
+    compressed_pages_without_text = []
+    if pages_without_text:
+        st.info(f"Comprimiendo {len(pages_without_text)} páginas sin texto como imágenes...")
+        
+        # Convertir páginas sin texto a imágenes
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_pdf:
+            # Crear PDF temporal solo con páginas sin texto
+            writer = PdfWriter()
+            for page_idx in pages_without_text:
+                writer.add_page(reader.pages[page_idx])
+            writer.write(temp_pdf)
+            temp_pdf_path = temp_pdf.name
+        
+        # Convertir este PDF a imágenes y comprimir
+        try:
+            images = convert_from_path(temp_pdf_path, dpi=dpi)
+            img_bytes_list = []
+            
+            for image in images:
+                img_byte_arr = io.BytesIO()
+                image.save(img_byte_arr, format='JPEG', quality=quality)
+                img_bytes_list.append(img_byte_arr.getvalue())
+            
+            # Convertir imágenes comprimidas de vuelta a PDF
+            if img_bytes_list:
+                compressed_pdf_bytes = img2pdf.convert(img_bytes_list)
+                compressed_reader = PdfReader(BytesIO(compressed_pdf_bytes))
+                compressed_pages_without_text = compressed_reader.pages
+        except Exception as e:
+            st.error(f"Error al comprimir páginas sin texto: {e}")
+            # Fallback: usar páginas originales
+            compressed_pages_without_text = [reader.pages[i] for i in pages_without_text]
+        finally:
+            # Limpiar archivo temporal
+            if os.path.exists(temp_pdf_path):
+                os.unlink(temp_pdf_path)
+    
+    # Combinar: páginas con texto originales + páginas sin texto comprimidas
+    writer = PdfWriter()
+    
+    # Reconstruir el PDF en el orden original
+    text_pages_iter = iter(pages_with_text)
+    no_text_pages_iter = iter(pages_without_text)
+    compressed_pages_iter = iter(compressed_pages_without_text)
+    
+    for i in range(total_pages):
+        if i in pages_with_text:
+            # Usar página original con texto
+            writer.add_page(reader.pages[i])
+        else:
+            # Usar página comprimida (sin texto)
+            try:
+                compressed_page = next(compressed_pages_iter)
+                writer.add_page(compressed_page)
+            except StopIteration:
+                # Fallback: usar página original
+                writer.add_page(reader.pages[i])
+    
+    # Guardar PDF combinado
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
 
 def find_split_point(pdf_bytes, max_size_mb):
     """
@@ -44,13 +144,13 @@ def find_split_point(pdf_bytes, max_size_mb):
         mid = (low + high) // 2
         
         # Extraer primera parte (páginas 1 a mid)
-        part1 = extract_pages(pdf_bytes, f"1-{mid}")
+        part1 = extract_pages_2(pdf_bytes, f"1-{mid}")
         if part1 is None:
             break
         size1 = get_file_size(part1)
         
         # Extraer segunda parte (páginas mid+1 a total_pages)
-        part2 = extract_pages(pdf_bytes, f"{mid+1}-{total_pages}")
+        part2 = extract_pages_2(pdf_bytes, f"{mid+1}-{total_pages}")
         if part2 is None:
             break
         size2 = get_file_size(part2)
@@ -67,8 +167,8 @@ def find_split_point(pdf_bytes, max_size_mb):
     
     # Si no se encuentra un punto ideal, usar la mitad como fallback
     split_point = total_pages // 2
-    part1 = extract_pages(pdf_bytes, f"1-{split_point}")
-    part2 = extract_pages(pdf_bytes, f"{split_point+1}-{total_pages}")
+    part1 = extract_pages_2(pdf_bytes, f"1-{split_point}")
+    part2 = extract_pages_2(pdf_bytes, f"{split_point+1}-{total_pages}")
     
     size1 = get_file_size(part1) if part1 else original_size
     size2 = get_file_size(part2) if part2 else original_size
@@ -218,8 +318,8 @@ def main():
                         split_point, size1, size2 = find_split_point(pdf_bytes, max_size_mb)
                         
                         # Extraer las dos partes
-                        part1 = extract_pages(pdf_bytes, f"1-{split_point}")
-                        part2 = extract_pages(pdf_bytes, f"{split_point+1}-{num_pages}")
+                        part1 = extract_pages_2(pdf_bytes, f"1-{split_point}")
+                        part2 = extract_pages_2(pdf_bytes, f"{split_point+1}-{num_pages}")
                         
                         # Comprimir si el usuario lo eligió
                         # if comprimir_partes:
@@ -453,12 +553,18 @@ def main():
                         
                         for attempt in range(10):  # Máximo 10 intentos
                             with st.spinner(f"Intento {attempt+1}: DPI={current_dpi}, Calidad={current_quality}..."):
-                                compressed_pdf_bytes = pdf_to_compressed_pdf(
+                                # compressed_pdf_bytes = pdf_to_compressed_pdf(
+                                #     combined_pdf,
+                                #     dpi=current_dpi,
+                                #     quality=current_quality
+                                # )
+                                compressed_pdf_bytes = compress_pdf_selective(
                                     combined_pdf,
                                     dpi=current_dpi,
-                                    quality=current_quality
+                                    quality=current_quality,
+                                    preserve_text=preserve_text
                                 )
-                            
+
                             if compressed_pdf_bytes is None:
                                 st.error("Error en la compresión")
                                 break

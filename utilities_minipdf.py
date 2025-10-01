@@ -10,88 +10,88 @@ from pypdf import PdfReader, PdfWriter
 from io import BytesIO
 import re
 
-# def parse_page_range(range_str, max_pages):
-#     """
-#     Convierte un string de rango de páginas en una lista de números de página
-#     Ejemplo: "1-3,5,7-9" -> [1,2,3,5,7,8,9]
-#     """
-#     pages = []
-#     parts = range_str.split(',')
-#     
-#     for part in parts:
-#         part = part.strip()
-#         if '-' in part:
-#             start, end = part.split('-')
-#             start = int(start.strip())
-#             end = int(end.strip())
-#             pages.extend(range(start, min(end, max_pages) + 1))
-#         else:
-#             page = int(part)
-#             if page <= max_pages:
-#                 pages.append(page)
-#     
-#     # Eliminar duplicados y ordenar
-#     return sorted(set(pages))
-
-def parse_page_range(page_range_str, max_pages):
+def parse_page_range(range_str, max_pages):
     """
-    Parsea un string de rango de páginas y devuelve una lista de números de página.
-    
-    Args:
-        page_range_str: String con el rango (ej: "1-3,5,7-9")
-        max_pages: Número máximo de páginas disponible
-    
-    Returns:
-        Lista de números de página (enteros)
+    Convierte un string de rango de páginas en una lista de números de página
+    Ejemplo: "1-3,5,7-9" -> [1,2,3,5,7,8,9]
     """
     pages = []
-    
-    # Eliminar espacios y dividir por comas
-    parts = page_range_str.replace(" ", "").split(",")
+    parts = range_str.split(',')
     
     for part in parts:
-        if "-" in part:
-            # Rango de páginas (ej: 1-3)
-            start_end = part.split("-")
-            if len(start_end) == 2:
-                try:
-                    start = int(start_end[0])
-                    end = int(start_end[1])
-                    # Asegurar que esté dentro de los límites
-                    start = max(1, min(start, max_pages))
-                    end = max(1, min(end, max_pages))
-                    if start <= end:
-                        pages.extend(range(start, end + 1))
-                except ValueError:
-                    continue
+        part = part.strip()
+        if '-' in part:
+            start, end = part.split('-')
+            start = int(start.strip())
+            end = int(end.strip())
+            pages.extend(range(start, min(end, max_pages) + 1))
         else:
-            # Página individual
-            try:
-                page_num = int(part)
-                if 1 <= page_num <= max_pages:
-                    pages.append(page_num)
-            except ValueError:
-                continue
+            page = int(part)
+            if page <= max_pages:
+                pages.append(page)
     
     # Eliminar duplicados y ordenar
-    pages = sorted(set(pages))
-    return pages
+    return sorted(set(pages))
 
-
-# def extract_pages(input_pdf_bytes, page_range):
-#     """Extrae las páginas especificadas de un PDF"""
-#     reader = PdfReader(BytesIO(input_pdf_bytes))
-#     writer = PdfWriter()
+# def parse_page_range(page_range_str, max_pages):
+#     """
+#     Parsea un string de rango de páginas y devuelve una lista de números de página.
 #     
-#     for page_num in page_range:
-#         if 0 <= page_num - 1 < len(reader.pages):
-#             writer.add_page(reader.pages[page_num - 1])
+#     Args:
+#         page_range_str: String con el rango (ej: "1-3,5,7-9")
+#         max_pages: Número máximo de páginas disponible
 #     
-#     output = BytesIO()
-#     writer.write(output)
-#     return output.getvalue()
+#     Returns:
+#         Lista de números de página (enteros)
+#     """
+#     pages = []
+#     
+#     # Eliminar espacios y dividir por comas
+#     parts = page_range_str.replace(" ", "").split(",")
+#     
+#     for part in parts:
+#         if "-" in part:
+#             # Rango de páginas (ej: 1-3)
+#             start_end = part.split("-")
+#             if len(start_end) == 2:
+#                 try:
+#                     start = int(start_end[0])
+#                     end = int(start_end[1])
+#                     # Asegurar que esté dentro de los límites
+#                     start = max(1, min(start, max_pages))
+#                     end = max(1, min(end, max_pages))
+#                     if start <= end:
+#                         pages.extend(range(start, end + 1))
+#                 except ValueError:
+#                     continue
+#         else:
+#             # Página individual
+#             try:
+#                 page_num = int(part)
+#                 if 1 <= page_num <= max_pages:
+#                     pages.append(page_num)
+#             except ValueError:
+#                 continue
+#     
+#     # Eliminar duplicados y ordenar
+#     pages = sorted(set(pages))
+#     return pages
 
-def extract_pages(pdf_bytes, page_range):
+
+def extract_pages(input_pdf_bytes, page_range):
+    """Extrae las páginas especificadas de un PDF"""
+    reader = PdfReader(BytesIO(input_pdf_bytes))
+    writer = PdfWriter()
+    
+    for page_num in page_range:
+        if 0 <= page_num - 1 < len(reader.pages):
+            writer.add_page(reader.pages[page_num - 1])
+    
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+def extract_pages_2(pdf_bytes, page_range):
     """
     Extrae un rango específico de páginas de un PDF.
     
@@ -298,3 +298,4 @@ def calculate_combined_size(file_data):
     
     combined_pdf = merge_pdfs(extracted_pdfs)
     return get_file_size(combined_pdf)
+
